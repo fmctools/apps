@@ -114,6 +114,10 @@ fn the_pages_validate_within_the_budgets_and_free_everything() {
             assert!(sizes.iter().all(|&s| s <= BUF));
             let p = v.pager.expect("pages");
             assert_eq!((p.at, p.n), (page, 3));
+            assert_eq!(v.bars[0], ROOT, "now has no scroll bar");
+            for bar in &v.bars[1..] {
+                assert_eq!(t.class(bar.0), Some(lvcmd::Class::ScrollBar));
+            }
             assert!(live(&t) <= lvcmd::MAX_OBJS, "{} objects", live(&t));
             std::println!("page {page}: {} objects, batches {sizes:?}", live(&t));
             // leaving frees every handle

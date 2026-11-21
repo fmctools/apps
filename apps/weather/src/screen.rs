@@ -330,7 +330,10 @@ fn days_content(b: &mut Batch, flush: &mut Flush, page: Obj, m: &Model, wall: i3
 pub struct View {
     pub root: Obj,
     pub pager: Option<Pager<3>>,
+    /// The stock round scroll bar of each page that scrolls (hours, days); `ROOT` for the rest.
+    pub bars: [Obj; 3],
 }
+
 
 /// One line in the middle of the screen.
 pub fn message_view(b: &mut Batch, flush: &mut Flush, text: &str) -> Result<View, LvError> {
@@ -340,7 +343,7 @@ pub fn message_view(b: &mut Batch, flush: &mut Flush, text: &str) -> Result<View
     b.style(l, Prop::TextColor, 0, GREY)?;
     b.long_mode(l, LongMode::Wrap)?;
     b.flags(r, &[], &[Flag::Hidden])?;
-    Ok(View { root: r, pager: None })
+    Ok(View { root: r, pager: None, bars: [ROOT; 3] })
 }
 
 /// The menu app: now, hours, days, opened on `page`.
@@ -355,11 +358,19 @@ pub fn pages_view(b: &mut Batch, flush: &mut Flush, m: &Model, wall: i32, page: 
     hours_content(b, flush, p.pages[1], m, wall)?;
     days_content(b, flush, p.pages[2], m, wall)?;
     room(b, flush)?;
+    let mut bars = [ROOT; 3];
+    for i in 1..3 {
+        bars[i] = b.scroll_bar(p.pages[i])?;
+    }
+    // a scroll bar takes the crown for its list, which then never pages on at its end: the pager keeps it, scrolls
+    // the page first and pages at its end, and the bar shows while the page scrolls
+    b.knob(p.obj)?;
+    let page = page.min(2);
     if page > 0 {
-        p.jump(b, page.min(2))?;
+        p.jump(b, page)?;
     }
     b.flags(p.root, &[], &[Flag::Hidden])?;
-    Ok(View { root: p.root, pager: Some(p) })
+    Ok(View { root: p.root, pager: Some(p), bars })
 }
 
 /// The page next to the watch face: the now screen alone.
@@ -371,7 +382,7 @@ pub fn face_view(b: &mut Batch, flush: &mut Flush, m: &Model, wall: i32) -> Resu
     let r = root(b)?;
     now_content(b, flush, r, m, wall)?;
     b.flags(r, &[], &[Flag::Hidden])?;
-    Ok(View { root: r, pager: None })
+    Ok(View { root: r, pager: None, bars: [ROOT; 3] })
 }
 
 /// Deletes a screen.

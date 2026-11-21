@@ -143,7 +143,7 @@ mod device {
             model.load(&blob[..n as usize]);
         }
         model.ask_now(api.now());
-        let view = View { root: ROOT, pager: None };
+        let view = View { root: ROOT, pager: None, bars: [ROOT; 3] };
         let mut app =
             App { api, lv, b, model, view, page: 0, on_page: api.on_page(), shown: (0, false, 0), card: (Line::new(), Line::new()) };
         app.draw();
