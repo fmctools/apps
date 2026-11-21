@@ -1,0 +1,5 @@
+name = "Storage"
+summary = "View free space, installed app sizes, watch faces and the watch storage layout"
+version = "0.1.0"
+author = "Arnav Kumar"
+screenshots = ["shots/overview.png", "shots/usage.png", "shots/apps.png", "shots/apps-more.png", "shots/watchfaces.png", "shots/system.png"]

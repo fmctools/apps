@@ -9,6 +9,7 @@ An app runs on a watch with the patched firmware and the App Loader, both on the
 
 | App | What it is |
 |---|---|
+| [`storage`](apps/storage) | Writable capacity, installed apps, watch faces and system reservations |
 | [`vibration-lab`](apps/vibration-lab) | A test bench for the vibration motor. The template for new apps |
 | [`ui-gallery`](apps/ui-gallery) | The stock firmware's widgets as an app can use them |
 | [`orbit`](apps/orbit) | Round-screen Pong: turn the crown to keep the ball inside the ring |
