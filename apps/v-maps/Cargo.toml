@@ -1,0 +1,13 @@
+[package]
+name = "v-maps"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cmf-wp2-app.workspace = true
+cmf-wp2-ui.workspace = true
+
+[[bin]]
+name = "v-maps"
+bench = false
