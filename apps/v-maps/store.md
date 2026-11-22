@@ -2,7 +2,7 @@ A Google Maps-inspired navigation app for the Nothing CMF Watch Pro 2 that bring
 
 The live map fills the screen and smoothly tracks your GPS movement with phone orientation in real time. You can switch between two map orientations: one where the center indicator rotates to match your direction while the map stays fixed, and another where the entire map rotates around you as you move. You can also save Home and Work locations for quick access.
 
-##Requirements
+Requirements
 The [patched firmware](/firmware) (`fw-wp2.bin` from 2026-11-13 or later) and the [App Loader](/firmware)
 (2026-11-13 or later).
 
