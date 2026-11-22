@@ -4,7 +4,7 @@
 
 # The SDK and its tooling. To move to a newer one: change the commit here, `make sdk`, build and test every app,
 # open a PR. Packages built against it change, but a store update still needs each app's version raised.
-WP2_APPS_REV := 4a5b025875d792b8b0b4c9bf4a252b13a04de5be
+WP2_APPS_REV := 884e9a693070c3dc587f814def3806889a3c4e49
 WP2_APPS_GIT := https://github.com/cmf-tech-community/cmf-watch-sdk
 SDK := .sdk/wp2-apps
 

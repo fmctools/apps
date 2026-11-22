@@ -101,6 +101,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tetris"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "twenty48"
 version = "0.1.0"
 dependencies = [

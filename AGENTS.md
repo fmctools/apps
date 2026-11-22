@@ -13,6 +13,7 @@ is what an agent needs on top.
   channel, budgets, the shipping checklist in section 7).
 - `.sdk/wp2-apps/docs/abi-1.4.md`: the channel key K, heart rate, pager, cards, stub version; horizontal pager,
   phone music (`media_key`, `media_bind`) and the 5 s escape for `own_back` apps need the loader of 2026-11-16.
+- `.sdk/wp2-apps/docs/storage-inspection.md`: read-only device storage metadata and bounded scans; requires a loader with storage service v1. Probe with `Storage::open`, not the ABI minor. Installed icons use `Batch::installed_app_icon` with `IconSize`. The desktop simulator has no LVGL; verify icon rendering in QEMU.
 - `apps/vibration-lab` (template, canvas), `apps/ui-gallery` (stock LVGL widgets), `apps/sky-hop` (a game): worked
   examples. More in `.sdk/wp2-apps/sdk/examples` (`hello` and `herdr-agents` have a widget and a page).
 

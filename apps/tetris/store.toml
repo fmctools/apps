@@ -1,0 +1,6 @@
+# The app's listing in the FMC store (README.md, "store.toml"). The page's body is store.md.
+name = "Tetris"
+summary = "Falling blocks. Crown moves, tap turns, hold drops"
+version = "0.1.0"
+author = "arunk140"
+screenshots = ["shots/ready.png", "shots/playing.png", "shots/over.png"]
