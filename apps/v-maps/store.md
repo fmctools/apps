@@ -6,7 +6,6 @@ Requirements
 The [patched firmware](/firmware) (`fw-wp2.bin` from 2026-11-13 or later) and the [App Loader](/firmware)
 (2026-11-13 or later).
 
-Vela for Android with the watch link, [APK on GitHub](https://github.com/arunk140/esp32-vela/releases/latest)
-([source](https://github.com/abdalrahmanmamdouh2004-svg/V-Maps/releases/tag/V-Maps)), on the phone that is paired with the watch in Nothing X. In
+Vela for Android with the watch link, [APK on GitHub](https://github.com/abdalrahmanmamdouh2004-svg/V-Maps/releases/tag/V-Maps), on the phone that is paired with the watch in Nothing X. In
 
 Vela: Settings > Nav device > CMF watch test, pick the watch, turn on **Show navigation on the watch**.
