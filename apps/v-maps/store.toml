@@ -1,6 +1,6 @@
 # The app's listing in the FMC store (README.md, "store.toml"). The page's body is store.md.
 name = "V-maps"
 summary = "A live map of your route and the streets around you, with the next turn and the time left, from the Vela maps app on your phone"
-version = "1.1.0"
+version = "1.1.1"
 author = "Abdalrahman"
 screenshots = ["shots/driving.png", "shots/zoomed-out.png", "shots/off-route.png"]
