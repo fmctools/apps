@@ -87,6 +87,11 @@ Treat every message as untrusted: anyone in BLE range can read the pairing secre
 reason nothing personal goes over the channel: no names, event or message titles, locations. Send counts, flags,
 times of day.
 
+**Owner-approved exception:** `music-controller` may transfer the current media notification's title, artist, and a
+low-resolution artwork thumbnail to its own watch face. This exception is scoped to that app and method; keep all other
+apps on the default non-personal rule. Parse the transferred values as untrusted, bound their lengths, and do not
+persist them in the watch's app storage.
+
 Phone side, next to the Nothing X app on the same phone: the channel key K (`abi-1.4.md`, "Writing a host"). No
 bind, no "Paired" popup, Nothing X keeps working. What exists today:
 
@@ -167,7 +172,8 @@ How it works and what it can't do:
 - Personal data: K is readable by anyone in BLE range. Calendar and reminder titles and notification text are off by
   default (records come with flag bit 2 and an empty title; show "busy" / "Reminder"); a per-app "Show text on the
   watch" switch turns them on. Location is 0.1° only. Event locations, attendees and notes are never sent. A watch
-  app sends nothing personal either: ids, counts, flags.
+  app sends nothing personal either: ids, counts, flags, except for the scoped `music-controller` artwork/track-text
+  exception described above.
 
 **What needs a newer watch.** Patched firmware **stub 8** (published 2026-11-19 as `1.0.0.73-wp2.11`, by OTA) with the
 loader of 2026-11-19 brings 16 app slots instead of 8 and `PUSH`, which `job.set` needs to refresh a widget or start

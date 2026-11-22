@@ -4,11 +4,13 @@
 //! The `M1` namespace is intentionally separate from FMC Companion's generic `R1` namespace, so both phone
 //! apps can coexist without answering each other's requests.
 //!
-//! Only non-personal playback state and music volume cross the BLE channel. Track names, artists,
-//! notification text and artwork never do.
+//! Playback state, music volume, the current title and artist, and optional album artwork may cross
+//! the BLE channel. Album names and notification text remain phone-only.
 
 pub const MUSIC_SNAPSHOT: u8 = 0x60;
 pub const MUSIC_COMMAND: u8 = 0x61;
+pub const MUSIC_ARTWORK: u8 = 0x62;
+pub const MUSIC_TRACK: u8 = 0x63;
 
 pub const OK: u8 = 0;
 pub const BAD_REQUEST: u8 = 1;
@@ -28,12 +30,16 @@ pub const VOLUME_UP: u8 = 5;
 pub const VOLUME_DOWN: u8 = 6;
 pub const SET_VOLUME: u8 = 7;
 
-/// A request that fits the app-message channel.
+/// A request that fits the app-message channel. The snapshot retains its original one-byte
+/// argument for compatibility with Music Companion 0.1.x; its unsupported artwork and track
+/// methods return `BAD_REQUEST` without affecting playback controls.
 #[derive(Clone, Copy, PartialEq)]
 #[cfg_attr(test, derive(Debug))]
 pub enum Request {
     Snapshot([u8; 6]),
     Command([u8; 7]),
+    Artwork([u8; 17]),
+    Track([u8; 5]),
 }
 
 impl Request {
@@ -41,11 +47,13 @@ impl Request {
         match self {
             Request::Snapshot(bytes) => bytes,
             Request::Command(bytes) => bytes,
+            Request::Artwork(bytes) => bytes,
+            Request::Track(bytes) => bytes,
         }
     }
 }
 
-/// Requests the current non-personal playback state.
+/// Requests the current playback state.
 pub fn snapshot_request(id: u8) -> Request {
     Request::Snapshot([b'M', b'1', b'Q', id, MUSIC_SNAPSHOT, 0])
 }
@@ -53,6 +61,21 @@ pub fn snapshot_request(id: u8) -> Request {
 /// `music.command`; `value` is used only by `SET_VOLUME`.
 pub fn command_request(id: u8, command: u8, value: u8) -> Request {
     Request::Command([b'M', b'1', b'Q', id, MUSIC_COMMAND, command, value])
+}
+
+/// Requests artwork newer than `known_generation` (zero when the watch has no artwork).
+/// The request and every reply are bounded by the app-message limits.
+pub fn artwork_request(id: u8, nonce: u32, known_generation: u64) -> Request {
+    let mut bytes = [0_u8; 17];
+    bytes[..5].copy_from_slice(&[b'M', b'1', b'Q', id, MUSIC_ARTWORK]);
+    bytes[5..9].copy_from_slice(&nonce.to_le_bytes());
+    bytes[9..17].copy_from_slice(&known_generation.to_le_bytes());
+    Request::Artwork(bytes)
+}
+
+/// Requests the current title and artist.
+pub fn track_request(id: u8) -> Request {
+    Request::Track([b'M', b'1', b'Q', id, MUSIC_TRACK])
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -72,7 +95,8 @@ impl Reply<'_> {
     }
 }
 
-/// A reply on this channel; anything else is ignored.
+/// A reply on this channel; anything else is ignored. The loader caps records at 121 bytes;
+/// the protocol never sends a larger record.
 pub fn reply(message: &[u8]) -> Option<Reply<'_>> {
     match message {
         [b'M', b'1', b'A', id, status, index, total, record @ ..]
@@ -90,7 +114,7 @@ pub fn reply(message: &[u8]) -> Option<Reply<'_>> {
     }
 }
 
-/// Non-personal playback state from the snapshot record.
+/// Playback state from the snapshot record.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(Debug))]
 pub struct Metadata {
@@ -186,6 +210,11 @@ mod tests {
             command_request(11, SET_VOLUME, 9).bytes(),
             &hex("4d31510b610709")
         );
+        assert_eq!(
+            artwork_request(0x2a, 0x1234_5678, 0x0102_0304_0506_0708).bytes(),
+            &hex("4d31512a62785634120807060504030201")
+        );
+        assert_eq!(track_request(0x2b).bytes(), &hex("4d31512b63"));
     }
 
     #[test]

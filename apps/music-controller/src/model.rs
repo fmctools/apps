@@ -1,10 +1,12 @@
 //! The phone-music state machine: requests, optimistic commands and the local cache.
 //!
 //! One RPC request is in flight at a time. Commands tapped while a snapshot is in flight wait in a
-//! small local queue. Only playback flags and music volume cross the BLE channel; no track text or
-//! artwork is accepted or retained.
+//! small local queue. The watch accepts the current title, artist, and a low-resolution artwork
+//! thumbnail; those values stay in memory and are never written to the local cache.
 
+use crate::artwork;
 use crate::rpc::{self, Metadata};
+use crate::track;
 
 pub const POLL_MS: u32 = 2_000;
 pub const RETRY_MS: u32 = 3_000;
@@ -12,9 +14,17 @@ pub const ASK_AGAIN_MS: u32 = 10_000;
 pub const COMMAND_REFRESH_MS: u32 = 250;
 pub const SNAPSHOT_TIMEOUT_MS: u32 = 10_000;
 pub const COMMAND_TIMEOUT_MS: u32 = 8_000;
+pub const TRACK_TIMEOUT_MS: u32 = 10_000;
+pub const ARTWORK_TIMEOUT_MS: u32 = 30_000;
+pub const TRACK_POLL_MS: u32 = 2_000;
+pub const ARTWORK_POLL_MS: u32 = 2_000;
+pub const ARTWORK_NO_IMAGE_MS: u32 = 10_000;
+pub const ARTWORK_UNSUPPORTED_MS: u32 = 30_000;
 pub const MAX_BACKOFF_MS: u32 = 30_000;
 
 const COMMAND_QUEUE_MAX: usize = 8;
+/// Maximum printable-ASCII bytes retained for the title and artist.
+pub const TRACK_TEXT_MAX: usize = 60;
 const MAGIC: &[u8; 2] = b"M2";
 /// Magic, fetched wall minute, then the four-byte metadata record.
 pub const BLOB_MAX: usize = 2 + 4 + 4;
@@ -48,6 +58,15 @@ enum Active {
         id: u8,
         started: u32,
     },
+    Track {
+        id: u8,
+        started: u32,
+    },
+    Artwork {
+        id: u8,
+        nonce: u32,
+        started: u32,
+    },
     Command {
         id: u8,
         command: u8,
@@ -74,11 +93,26 @@ pub struct Model {
     /// Bumped on every visible change.
     pub rev: u32,
 
+    title: [u8; TRACK_TEXT_MAX],
+    title_len: u8,
+    artist: [u8; TRACK_TEXT_MAX],
+    artist_len: u8,
+
     id: u8,
     next_poll: u32,
     next_command: u32,
+    next_track: u32,
+    next_artwork: u32,
+    artwork_nonce: u32,
+    artwork_backoff: u32,
     backoff: u32,
     active: Option<Active>,
+    artwork: artwork::Receiver,
+    pending_title: [u8; TRACK_TEXT_MAX],
+    pending_title_len: u8,
+    pending_artist: [u8; TRACK_TEXT_MAX],
+    pending_artist_len: u8,
+    track_seen: u8,
     commands: [Command; COMMAND_QUEUE_MAX],
     command_head: usize,
     /// Pending commands, including the active command while it is at the queue head.
@@ -94,11 +128,25 @@ impl Model {
             status: Status::Waiting,
             fetched: None,
             rev: 0,
+            title: [0; TRACK_TEXT_MAX],
+            title_len: 0,
+            artist: [0; TRACK_TEXT_MAX],
+            artist_len: 0,
             id: 0,
             next_poll: 0,
             next_command: 0,
+            next_track: TRACK_POLL_MS,
+            next_artwork: ARTWORK_POLL_MS,
+            artwork_nonce: 0,
+            artwork_backoff: 1_000,
             backoff: RETRY_MS,
             active: None,
+            artwork: artwork::Receiver::new(),
+            pending_title: [0; TRACK_TEXT_MAX],
+            pending_title_len: 0,
+            pending_artist: [0; TRACK_TEXT_MAX],
+            pending_artist_len: 0,
+            track_seen: 0,
             commands: [Command {
                 code: 0,
                 value: 0,
@@ -113,8 +161,11 @@ impl Model {
     /// Ask at once (start or RESUME). A reply from the previous run has a different id and is ignored.
     pub fn ask_now(&mut self, now: u32) {
         self.active = None;
+        self.artwork.reset();
         self.backoff = RETRY_MS;
         self.next_poll = now;
+        self.next_track = now.wrapping_add(TRACK_POLL_MS);
+        self.next_artwork = now.wrapping_add(ARTWORK_POLL_MS);
         if self.command_len > 0 {
             self.next_command = now;
         }
@@ -141,18 +192,86 @@ impl Model {
         self.metadata.playing()
     }
 
+    /// The current track title, kept only in memory.
+    pub fn track_title(&self) -> &str {
+        core::str::from_utf8(&self.title[..self.title_len as usize]).unwrap_or("")
+    }
+
+    /// The current track artist, kept only in memory.
+    pub fn track_artist(&self) -> &str {
+        core::str::from_utf8(&self.artist[..self.artist_len as usize]).unwrap_or("")
+    }
+
+    /// Replace the in-memory title and artist. Returns whether the visible text changed.
+    pub fn set_track_text(&mut self, title: &[u8], artist: &[u8]) -> bool {
+        let title_len = title.len().min(TRACK_TEXT_MAX);
+        let artist_len = artist.len().min(TRACK_TEXT_MAX);
+        let changed = self.title_len as usize != title_len
+            || self.artist_len as usize != artist_len
+            || self.title[..title_len] != title[..title_len]
+            || self.artist[..artist_len] != artist[..artist_len];
+        if changed {
+            self.title[..title_len].copy_from_slice(&title[..title_len]);
+            self.artist[..artist_len].copy_from_slice(&artist[..artist_len]);
+            self.title_len = title_len as u8;
+            self.artist_len = artist_len as u8;
+            self.rev += 1;
+        }
+        changed
+    }
+
+    /// Whether a complete artwork image may currently be displayed.
+    pub fn artwork_visible(&self) -> bool {
+        self.artwork.is_visible()
+    }
+
+    /// The committed artwork generation, or zero when there is none.
+    pub fn artwork_generation(&self) -> u64 {
+        self.artwork.committed_generation().unwrap_or(0)
+    }
+
+    /// One artwork pixel in RGB565.
+    pub fn artwork_pixel(&self, x: u8, y: u8) -> Option<u16> {
+        self.artwork.current_pixel(x, y)
+    }
+
+    /// Transport controls are live only while the phone has confirmed an active session.
+    pub fn controls_enabled(&self) -> bool {
+        self.status == Status::Ok && self.active()
+    }
+
+    /// Volume controls require a live session and a known non-zero maximum.
+    pub fn volume_enabled(&self) -> bool {
+        self.controls_enabled() && self.max_volume() > 0
+    }
+
     /// The next request to send, if any.
     pub fn poll(&mut self, now: u32) -> Option<rpc::Request> {
         if let Some(active) = self.active {
             if now.wrapping_sub(started_at(active)) >= timeout_for(active) {
-                if matches!(active, Active::Command { .. }) {
-                    self.send_failed(now);
-                } else {
-                    self.active = None;
-                    self.status = Status::Silent;
-                    self.backoff = (self.backoff * 2).min(MAX_BACKOFF_MS);
-                    self.next_poll = now.wrapping_add(self.backoff);
-                    self.rev += 1;
+                match active {
+                    Active::Command { .. } => self.send_failed(now),
+                    Active::Snapshot { .. } => {
+                        self.active = None;
+                        self.status = Status::Silent;
+                        self.backoff = (self.backoff * 2).min(MAX_BACKOFF_MS);
+                        self.next_poll = now.wrapping_add(self.backoff);
+                        self.rev += 1;
+                    }
+                    Active::Track { .. } => {
+                        self.active = None;
+                        self.next_track = now.wrapping_add(TRACK_POLL_MS);
+                    }
+                    Active::Artwork { .. } => {
+                        let was_visible = self.artwork.is_visible();
+                        self.active = None;
+                        self.artwork.timeout();
+                        self.next_artwork = now.wrapping_add(self.artwork_backoff);
+                        self.artwork_backoff = (self.artwork_backoff * 2).min(MAX_BACKOFF_MS);
+                        if was_visible != self.artwork.is_visible() {
+                            self.rev += 1;
+                        }
+                    }
                 }
             }
             return None;
@@ -173,15 +292,41 @@ impl Model {
             return Some(rpc::command_request(self.id, command.code, command.value));
         }
 
-        if !due(now, self.next_poll) {
-            return None;
+        if due(now, self.next_poll) {
+            self.id = self.id.wrapping_add(1);
+            self.active = Some(Active::Snapshot {
+                id: self.id,
+                started: now,
+            });
+            return Some(rpc::snapshot_request(self.id));
         }
-        self.id = self.id.wrapping_add(1);
-        self.active = Some(Active::Snapshot {
-            id: self.id,
-            started: now,
-        });
-        Some(rpc::snapshot_request(self.id))
+
+        // Track text and artwork are meaningful only while a confirmed media session exists.
+        // A no-media snapshot therefore also suppresses both follow-up requests.
+        if self.has_snapshot && self.status == Status::Ok && self.active() && due(now, self.next_track) {
+            self.id = self.id.wrapping_add(1);
+            self.active = Some(Active::Track {
+                id: self.id,
+                started: now,
+            });
+            self.track_seen = 0;
+            self.pending_title_len = 0;
+            self.pending_artist_len = 0;
+            return Some(rpc::track_request(self.id));
+        }
+
+        if self.has_snapshot && self.status == Status::Ok && self.active() && due(now, self.next_artwork) {
+            self.id = self.id.wrapping_add(1);
+            self.artwork_nonce = self.artwork_nonce.wrapping_add(1).max(1);
+            self.active = Some(Active::Artwork {
+                id: self.id,
+                nonce: self.artwork_nonce,
+                started: now,
+            });
+            return Some(self.artwork.begin(self.id, self.artwork_nonce));
+        }
+
+        None
     }
 
     /// Queue a playback or volume command and update the visible state immediately.
@@ -236,15 +381,30 @@ impl Model {
         match active {
             Active::Snapshot { .. } => {
                 self.next_poll = now.wrapping_add(self.backoff);
+                self.status = Status::Silent;
+                self.backoff = (self.backoff * 2).min(MAX_BACKOFF_MS);
+                self.rev += 1;
             }
             Active::Command { .. } => {
                 self.next_command = now.wrapping_add(self.backoff);
                 self.next_poll = now.wrapping_add(self.backoff);
+                self.status = Status::Silent;
+                self.backoff = (self.backoff * 2).min(MAX_BACKOFF_MS);
+                self.rev += 1;
+            }
+            Active::Track { .. } => {
+                self.next_track = now.wrapping_add(TRACK_POLL_MS);
+            }
+            Active::Artwork { .. } => {
+                let was_visible = self.artwork.is_visible();
+                self.artwork.timeout();
+                self.next_artwork = now.wrapping_add(self.artwork_backoff);
+                self.artwork_backoff = (self.artwork_backoff * 2).min(MAX_BACKOFF_MS);
+                if was_visible != self.artwork.is_visible() {
+                    self.rev += 1;
+                }
             }
         }
-        self.status = Status::Silent;
-        self.backoff = (self.backoff * 2).min(MAX_BACKOFF_MS);
-        self.rev += 1;
     }
 
     /// Handle one host message.
@@ -283,6 +443,8 @@ impl Model {
                 }
             }
             Active::Snapshot { id, .. } if id == reply.id => self.snapshot(reply, now, wall),
+            Active::Track { id, .. } if id == reply.id => self.track(reply, now),
+            Active::Artwork { id, .. } if id == reply.id => self.artwork_reply(reply, now),
             _ => Got::Nothing,
         }
     }
@@ -313,6 +475,159 @@ impl Model {
             self.commands[index] = command;
         }
         self.metadata = state;
+    }
+
+    fn track(&mut self, reply: rpc::Reply<'_>, now: u32) -> Got {
+        if reply.status != rpc::OK {
+            // Error replies have one exact empty shape. Any other shape is malformed and must not
+            // be interpreted as a meaningful permission or compatibility response.
+            if reply.index != 0 || reply.total != 0 || !reply.record.is_empty() {
+                return self.reject_track(now);
+            }
+            self.active = None;
+            let retry = match reply.status {
+                rpc::BAD_REQUEST => ARTWORK_UNSUPPORTED_MS,
+                rpc::ASK | rpc::DENIED => ASK_AGAIN_MS,
+                _ => RETRY_MS,
+            };
+            self.next_track = now.wrapping_add(retry);
+            self.clear_track_text();
+            return Got::Changed;
+        }
+        if reply.total != track::TRACK_TOTAL || reply.index >= track::TRACK_TOTAL {
+            return self.reject_track(now);
+        }
+        let Some((field, text)) = track::decode(reply.record) else {
+            return self.reject_track(now);
+        };
+        let expected = if reply.index == 0 {
+            track::Field::Title
+        } else {
+            track::Field::Artist
+        };
+        if field != expected {
+            return self.reject_track(now);
+        }
+
+        let bit = if field == track::Field::Title { 1 } else { 2 };
+        if self.track_seen & bit != 0 {
+            return self.reject_track(now);
+        }
+        if field == track::Field::Title {
+            self.pending_title[..text.len()].copy_from_slice(text);
+            self.pending_title_len = text.len() as u8;
+        } else {
+            self.pending_artist[..text.len()].copy_from_slice(text);
+            self.pending_artist_len = text.len() as u8;
+        }
+        self.track_seen |= bit;
+
+        if self.track_seen != 3 {
+            return Got::Nothing;
+        }
+
+        self.active = None;
+        self.next_track = now.wrapping_add(TRACK_POLL_MS);
+        let mut title = [0_u8; TRACK_TEXT_MAX];
+        let mut artist = [0_u8; TRACK_TEXT_MAX];
+        title[..self.pending_title_len as usize]
+            .copy_from_slice(&self.pending_title[..self.pending_title_len as usize]);
+        artist[..self.pending_artist_len as usize]
+            .copy_from_slice(&self.pending_artist[..self.pending_artist_len as usize]);
+        self.set_track_text(
+            &title[..self.pending_title_len as usize],
+            &artist[..self.pending_artist_len as usize],
+        );
+        Got::Changed
+    }
+
+    fn reject_track(&mut self, now: u32) -> Got {
+        self.active = None;
+        self.next_track = now.wrapping_add(TRACK_POLL_MS);
+        self.clear_track_text();
+        Got::Changed
+    }
+
+    fn clear_track_text(&mut self) {
+        self.set_track_text(&[], &[]);
+    }
+
+    fn artwork_reply(&mut self, reply: rpc::Reply<'_>, now: u32) -> Got {
+        let was_visible = self.artwork.is_visible();
+        let outcome = self.artwork.handle_reply(reply);
+        let visible_changed = was_visible != self.artwork.is_visible();
+        match outcome {
+            artwork::Outcome::Ignored | artwork::Outcome::Pending => {
+                if visible_changed {
+                    self.rev += 1;
+                    Got::Changed
+                } else {
+                    Got::Nothing
+                }
+            }
+            artwork::Outcome::Complete => {
+                self.active = None;
+                self.next_artwork = now.wrapping_add(ARTWORK_POLL_MS);
+                self.artwork_backoff = 1_000;
+                self.rev += 1;
+                Got::Changed
+            }
+            artwork::Outcome::Unchanged => {
+                self.active = None;
+                self.next_artwork = now.wrapping_add(ARTWORK_POLL_MS);
+                self.artwork_backoff = 1_000;
+                if visible_changed {
+                    self.rev += 1;
+                    Got::Changed
+                } else {
+                    Got::Nothing
+                }
+            }
+            artwork::Outcome::Unavailable => {
+                self.active = None;
+                self.next_artwork = now.wrapping_add(ARTWORK_NO_IMAGE_MS);
+                self.artwork_backoff = 1_000;
+                if visible_changed {
+                    self.rev += 1;
+                    Got::Changed
+                } else {
+                    Got::Nothing
+                }
+            }
+            artwork::Outcome::PermissionRequired | artwork::Outcome::Denied => {
+                self.active = None;
+                self.next_artwork = now.wrapping_add(ARTWORK_NO_IMAGE_MS);
+                self.artwork_backoff = 1_000;
+                if visible_changed {
+                    self.rev += 1;
+                    Got::Changed
+                } else {
+                    Got::Nothing
+                }
+            }
+            artwork::Outcome::Unsupported => {
+                self.active = None;
+                self.next_artwork = now.wrapping_add(ARTWORK_UNSUPPORTED_MS);
+                self.artwork_backoff = 1_000;
+                if visible_changed {
+                    self.rev += 1;
+                    Got::Changed
+                } else {
+                    Got::Nothing
+                }
+            }
+            artwork::Outcome::Invalid => {
+                self.active = None;
+                self.next_artwork = now.wrapping_add(self.artwork_backoff);
+                self.artwork_backoff = (self.artwork_backoff * 2).min(MAX_BACKOFF_MS);
+                if visible_changed {
+                    self.rev += 1;
+                    Got::Changed
+                } else {
+                    Got::Nothing
+                }
+            }
+        }
     }
 
     fn snapshot(&mut self, reply: rpc::Reply<'_>, now: u32, wall: i32) -> Got {
@@ -353,7 +668,19 @@ impl Model {
         self.status = Status::Ok;
         self.backoff = RETRY_MS;
         self.next_poll = now.wrapping_add(POLL_MS);
+        if !due(now, self.next_track) {
+            self.next_track = now.wrapping_add(TRACK_POLL_MS);
+        }
+        if !due(now, self.next_artwork) {
+            self.next_artwork = now.wrapping_add(ARTWORK_POLL_MS);
+        }
         self.active = None;
+
+        // A confirmed no-media state must not retain a previous cover or track label.
+        if !self.active() {
+            self.clear_track_text();
+            self.artwork.clear();
+        }
 
         // Compare the effective state after queued optimistic commands are reapplied. The raw
         // snapshot can equal the old optimistic value even though the final visible state differs.
@@ -366,7 +693,7 @@ impl Model {
         }
     }
 
-    /// The cache blob. It holds non-personal playback state and volume only.
+    /// The cache blob. It holds playback state and volume only; title, artist, and artwork stay in RAM.
     pub fn save(&mut self, out: &mut [u8]) -> usize {
         if !self.has_snapshot {
             return 0;
@@ -390,7 +717,7 @@ impl Model {
         self.cache_dirty = false;
     }
 
-    /// Restore cached non-personal playback state.
+    /// Restore cached playback state; transferred title and artwork are never cached.
     pub fn load(&mut self, blob: &[u8]) {
         if blob.len() < 10 || &blob[..2] != MAGIC {
             return;
@@ -408,14 +735,22 @@ impl Model {
 
     /// Ms until the next request or timeout.
     pub fn wait(&self, now: u32) -> u32 {
-        let next = if let Some(active) = self.active {
-            started_at(active).wrapping_add(timeout_for(active))
-        } else if self.command_len > 0 {
-            self.next_command.min(self.next_poll)
-        } else {
-            self.next_poll
-        };
-        next.wrapping_sub(now).min(SNAPSHOT_TIMEOUT_MS)
+        if let Some(active) = self.active {
+            return deadline_delay(started_at(active).wrapping_add(timeout_for(active)), now)
+                .min(timeout_for(active));
+        }
+
+        let mut delay = deadline_delay(self.next_poll, now);
+        if self.command_len > 0 {
+            delay = delay.min(deadline_delay(self.next_command, now));
+        }
+        // Track and artwork polls are eligible only after a successful snapshot confirms an
+        // active media session. Otherwise their deadlines must not wake the event loop.
+        if self.has_snapshot && self.status == Status::Ok && self.active() {
+            delay = delay.min(deadline_delay(self.next_track, now));
+            delay = delay.min(deadline_delay(self.next_artwork, now));
+        }
+        delay
     }
 }
 
@@ -447,15 +782,30 @@ fn due(now: u32, at: u32) -> bool {
     now.wrapping_sub(at) as i32 >= 0
 }
 
+/// Delay until a wrap-safe deadline. An overdue deadline is immediately due, never a huge wait.
+fn deadline_delay(deadline: u32, now: u32) -> u32 {
+    let delta = deadline.wrapping_sub(now);
+    if delta as i32 >= 0 {
+        delta
+    } else {
+        0
+    }
+}
+
 fn started_at(active: Active) -> u32 {
     match active {
-        Active::Snapshot { started, .. } | Active::Command { started, .. } => started,
+        Active::Snapshot { started, .. }
+        | Active::Track { started, .. }
+        | Active::Artwork { started, .. }
+        | Active::Command { started, .. } => started,
     }
 }
 
 fn timeout_for(active: Active) -> u32 {
     match active {
         Active::Snapshot { .. } => SNAPSHOT_TIMEOUT_MS,
+        Active::Track { .. } => TRACK_TIMEOUT_MS,
+        Active::Artwork { .. } => ARTWORK_TIMEOUT_MS,
         Active::Command { .. } => COMMAND_TIMEOUT_MS,
     }
 }
@@ -888,6 +1238,278 @@ mod tests {
             Got::Nothing
         );
         assert!(!model.has_snapshot);
+    }
+
+    #[test]
+    fn track_text_and_artwork_are_committed_only_after_valid_replies() {
+        let mut model = Model::new();
+        let snapshot_id = match model.poll(0).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(snapshot_id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            10,
+            100,
+        );
+
+        // At the shared poll deadline the playback snapshot has priority, then track text and
+        // artwork follow as separate bounded requests.
+        let snapshot_id = match model.poll(POLL_MS + 10).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(snapshot_id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            POLL_MS + 11,
+            100,
+        );
+
+        let track_id = match model.poll(POLL_MS + 12).unwrap() {
+            rpc::Request::Track(bytes) => bytes[3],
+            _ => panic!("expected track request"),
+        };
+        model.reply(
+            &reply(
+                track_id,
+                rpc::OK,
+                0,
+                2,
+                &[
+                    0, 13, b'M', b'i', b'd', b'n', b'i', b'g', b'h', b't', b' ', b'C', b'i', b't',
+                    b'y',
+                ],
+            ),
+            POLL_MS + 13,
+            100,
+        );
+        model.reply(
+            &reply(track_id, rpc::OK, 1, 2, &[1, 3, b'M', b'8', b'3']),
+            POLL_MS + 14,
+            100,
+        );
+        assert_eq!(model.track_title(), "Midnight City");
+        assert_eq!(model.track_artist(), "M83");
+
+        let (artwork_id, nonce) = match model.poll(POLL_MS + 15).unwrap() {
+            rpc::Request::Artwork(bytes) => (
+                bytes[3],
+                u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]),
+            ),
+            _ => panic!("expected artwork request"),
+        };
+        let payload = [0_u8; artwork::PAYLOAD_LEN];
+        let mut manifest = [0_u8; artwork::MANIFEST_LEN];
+        manifest[0] = artwork::MANIFEST_VERSION;
+        manifest[1] = artwork::ENCODING_RGB332_6BPP;
+        manifest[2] = artwork::WIDTH;
+        manifest[3] = artwork::HEIGHT;
+        manifest[5..9].copy_from_slice(&nonce.to_le_bytes());
+        manifest[9..17].copy_from_slice(&1_u64.to_le_bytes());
+        manifest[17..21].copy_from_slice(&(artwork::PAYLOAD_LEN as u32).to_le_bytes());
+        manifest[21..25].copy_from_slice(&artwork::crc32(&payload).to_le_bytes());
+        model.reply(
+            &reply(artwork_id, rpc::OK, 0, artwork::RECORD_COUNT, &manifest),
+            POLL_MS + 16,
+            100,
+        );
+        assert!(!model.artwork_visible());
+
+        for index in 1..=artwork::CHUNK_COUNT {
+            let offset = (index - 1) * artwork::CHUNK_LEN;
+            let len = if index == artwork::CHUNK_COUNT {
+                artwork::LAST_CHUNK_LEN
+            } else {
+                artwork::CHUNK_LEN
+            };
+            let mut chunk = Vec::with_capacity(6 + len);
+            chunk.extend_from_slice(&nonce.to_le_bytes());
+            chunk.extend_from_slice(&(offset as u16).to_le_bytes());
+            chunk.extend_from_slice(&payload[offset..offset + len]);
+            model.reply(
+                &reply(
+                    artwork_id,
+                    rpc::OK,
+                    index as u8,
+                    artwork::RECORD_COUNT,
+                    &chunk,
+                ),
+                POLL_MS + 16 + index as u32,
+                100,
+            );
+        }
+        assert!(model.artwork_visible());
+        assert_eq!(model.artwork_generation(), 1);
+        assert_eq!(model.status, Status::Ok);
+
+        // The persistent cache remains the fixed playback-state record only.
+        let mut blob = [0_u8; BLOB_MAX];
+        let len = model.save(&mut blob);
+        assert_eq!(len, BLOB_MAX);
+        assert!(!blob.windows(13).any(|window| window == b"Midnight City"));
+    }
+
+    #[test]
+    fn wait_never_busy_spins_or_delays_an_overdue_snapshot() {
+        let mut model = Model::new();
+        let id = match model.poll(0).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(id, rpc::ASK, 0, 0, &[]),
+            10,
+            100,
+        );
+        assert_eq!(model.wait(10), ASK_AGAIN_MS);
+
+        model.reply(
+            &reply(id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            11,
+            100,
+        );
+        // The late OK reply is ignored because the ASK already terminated the request.
+        assert_eq!(model.wait(11), ASK_AGAIN_MS - 1);
+
+        let mut model = Model::new();
+        model.next_poll = 100;
+        assert_eq!(model.wait(500), 0);
+    }
+
+    #[test]
+    fn wait_ignores_track_and_artwork_deadlines_until_media_is_active() {
+        let mut model = Model::new();
+        model.next_poll = 5_000;
+        model.next_track = 10;
+        model.next_artwork = 20;
+        model.has_snapshot = true;
+        model.status = Status::Ok;
+        assert_eq!(model.wait(100), 4_900);
+
+        model.metadata.flags = rpc::RESPONSE_ACTIVE | rpc::RESPONSE_PLAYING;
+        assert_eq!(model.wait(100), 0);
+        assert!(matches!(model.poll(100), Some(rpc::Request::Track(_))));
+    }
+
+    #[test]
+    fn malformed_track_error_is_rejected_without_being_interpreted() {
+        let mut model = Model::new();
+        let id = match model.poll(0).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            10,
+            100,
+        );
+        let id = match model.poll(POLL_MS + 10).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            POLL_MS + 11,
+            100,
+        );
+        let id = match model.poll(POLL_MS + 12).unwrap() {
+            rpc::Request::Track(bytes) => bytes[3],
+            _ => panic!("expected track request"),
+        };
+        model.reply(
+            &reply(id, rpc::DENIED, 1, 2, b"x"),
+            POLL_MS + 13,
+            100,
+        );
+        assert_eq!(model.status, Status::Ok);
+        assert_eq!(model.next_track, POLL_MS + 13 + TRACK_POLL_MS);
+        // The artwork poll is already due while the media session is active, so the malformed
+        // track reply must not introduce a busy wait.
+        assert_eq!(model.wait(POLL_MS + 13), 0);
+        assert!(matches!(
+            model.poll(POLL_MS + 13),
+            Some(rpc::Request::Artwork(_))
+        ));
+        assert_eq!(model.next_artwork, 2_010);
+    }
+
+    #[test]
+    fn no_media_snapshot_clears_text_and_committed_artwork() {
+        let mut model = Model::new();
+        let id = match model.poll(0).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            10,
+            100,
+        );
+        model.set_track_text(b"Midnight City", b"M83");
+        model.artwork_visible();
+
+        let id = match model.poll(POLL_MS + 10).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(id, rpc::OK, 0, 1, &metadata_record(0, 7, 15)),
+            POLL_MS + 11,
+            100,
+        );
+        assert!(!model.active());
+        assert!(model.track_title().is_empty());
+        assert!(model.track_artist().is_empty());
+        assert!(!model.artwork_visible());
+        assert_eq!(model.artwork_generation(), 0);
+    }
+
+    #[test]
+    fn old_companion_fallback_keeps_controls_live_without_names_or_artwork() {
+        let mut model = Model::new();
+        let snapshot_id = match model.poll(0).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(snapshot_id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            10,
+            100,
+        );
+        let snapshot_id = match model.poll(POLL_MS + 10).unwrap() {
+            rpc::Request::Snapshot(bytes) => bytes[3],
+            _ => panic!("expected snapshot"),
+        };
+        model.reply(
+            &reply(snapshot_id, rpc::OK, 0, 1, &metadata_record(3, 7, 15)),
+            POLL_MS + 11,
+            100,
+        );
+
+        let track_id = match model.poll(POLL_MS + 12).unwrap() {
+            rpc::Request::Track(bytes) => bytes[3],
+            _ => panic!("expected track request"),
+        };
+        model.reply(
+            &reply(track_id, rpc::BAD_REQUEST, 0, 0, &[]),
+            POLL_MS + 13,
+            100,
+        );
+        assert!(model.track_title().is_empty());
+        assert!(model.track_artist().is_empty());
+
+        let artwork_id = match model.poll(POLL_MS + 14).unwrap() {
+            rpc::Request::Artwork(bytes) => bytes[3],
+            _ => panic!("expected artwork request"),
+        };
+        model.reply(
+            &reply(artwork_id, rpc::BAD_REQUEST, 0, 0, &[]),
+            POLL_MS + 15,
+            100,
+        );
+        assert!(!model.artwork_visible());
+        assert_eq!(model.status, Status::Ok);
+        assert!(model.controls_enabled());
     }
 
     #[test]

@@ -5,9 +5,15 @@
 )]
 
 #[cfg_attr(not(any(target_os = "none", wp2_sim)), allow(dead_code))]
+mod artwork;
+#[cfg_attr(not(any(target_os = "none", wp2_sim)), allow(dead_code))]
 mod model;
 #[cfg_attr(not(any(target_os = "none", wp2_sim)), allow(dead_code))]
+mod ntype82;
+#[cfg_attr(not(any(target_os = "none", wp2_sim)), allow(dead_code))]
 mod rpc;
+#[cfg_attr(not(any(target_os = "none", wp2_sim)), allow(dead_code))]
+mod track;
 #[cfg_attr(not(any(target_os = "none", wp2_sim)), allow(dead_code))]
 mod view;
 
@@ -16,9 +22,9 @@ fn main() {}
 
 #[cfg(any(target_os = "none", wp2_sim))]
 mod device {
-    use crate::model::{BLOB_MAX, Got, Model, wall_min};
+    use crate::model::{wall_min, Got, Model, BLOB_MAX};
     use crate::rpc;
-    use crate::view::{Action, action, frame};
+    use crate::view::{action, frame, Action};
     use cmf_wp2_app::{Api, BUTTON, CROWN, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN};
     use cmf_wp2_ui::haptic::{Motor, TICK};
     use core::ptr::addr_of_mut;
@@ -120,7 +126,13 @@ mod device {
                     drawn = None;
                 }
                 TOUCH_DOWN => {
-                    let action = action(event.x as i32, event.y as i32, m.max_volume());
+                    let action = action(
+                        event.x as i32,
+                        event.y as i32,
+                        m.max_volume(),
+                        m.controls_enabled(),
+                        m.volume_enabled(),
+                    );
                     let queued = match action {
                         Action::Previous => m.command(rpc::PREVIOUS, 0),
                         Action::Toggle => m.command(rpc::TOGGLE, 0),

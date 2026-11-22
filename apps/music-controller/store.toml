@@ -1,5 +1,5 @@
 name = "Music Controller"
-summary = "Private playback and music-volume controls"
-version = "0.1.1"
+summary = "Track artwork, details, and music controls"
+version = "0.2.0"
 author = "CMF Tech Community"
 screenshots = ["shots/playing.png", "shots/waiting.png"]
