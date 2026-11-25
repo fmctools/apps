@@ -802,17 +802,17 @@ pub fn show_vol(b: &mut Batch, s: &Screen, level: u8) -> Result<(), LvError> {
 /// The pause bars while it plays, the play triangle while it is paused: one flag record each, so the two can never be
 /// left showing at once (with a record per piece, a batch that ran out between them did exactly that).
 pub fn show_state(b: &mut Batch, s: &Screen, playing: bool) -> Result<(), LvError> {
-    // flags(set, clear)
-    let (set, clear) = if playing {
-        (&[Flag::Hidden][..], &[][..])
-    } else {
-        (&[][..], &[Flag::Hidden][..])
-    };
+    // `flags(set, clear)`. While it plays the pause bars are up, because a tap then pauses it; while it is paused, the
+    // triangle is. (Read the other way round the two swap, which is exactly what a reversed button looks like.)
+    let hidden = &[Flag::Hidden][..];
+    let shown: &[Flag] = &[];
     if s.pause_group != ROOT {
+        let (set, clear) = if playing { (shown, hidden) } else { (hidden, shown) };
         b.flags(s.pause_group, set, clear)?;
     }
     if s.play_group != ROOT {
-        b.flags(s.play_group, clear, set)?;
+        let (set, clear) = if playing { (hidden, shown) } else { (shown, hidden) };
+        b.flags(s.play_group, set, clear)?;
     }
     Ok(())
 }
