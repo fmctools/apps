@@ -18,7 +18,7 @@ An app runs on a watch with the patched firmware and the App Loader, both on the
 | [`reminders`](apps/reminders) | The iPhone's open reminders: overdue, today, later; tick one off with a tap, and a widget card (needs FMC Companion on an iPhone) |
 | [`weather`](apps/weather) | Now, the next hours and the week ahead, in stock LVGL parts; a page next to the face and a widget card by the hour (needs FMC Companion) |
 | [`ha-remote`](apps/ha-remote) | Up to five Home Assistant light and group toggles with an Android companion |
-| [`metrolist`](apps/metrolist) | Browse and play your Metrolist (YouTube Music) library, and control the phone's playback; an Android companion carries the link |
+| [`metrolist`](apps/metrolist) | Browse and play your Metrolist (YouTube Music) library, and control the phone's playback; the [Android companion](https://github.com/krtkygpta/metrolist/releases/latest) carries the link |
 
 ## Make your own app
 
