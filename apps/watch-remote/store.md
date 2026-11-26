@@ -13,8 +13,7 @@ You can change what every button does in the phone app.
 
 ## Requirements
 
-- The **Watch Menu** phone app (Android 9 or newer), from
-  [github.com/abdalrahmanmamdouh2004-svg/replies](https://github.com/abdalrahmanmamdouh2004-svg/replies).
+- The [**Watch Menu**](https://github.com/abdalrahmanmamdouh2004-svg/watch-menu/releases/tag/1.0.0) phone app (Android 9 or newer).
   Turn on Watch Remote there, then pair your PC or TV with the phone over Bluetooth once.
 - The watch paired with the **Nothing X** app first, then connected in Watch Menu.
 - The patched firmware with the channel key (2026-11-13 or later) and the App Loader.
