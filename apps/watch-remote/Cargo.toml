@@ -1,0 +1,13 @@
+[package]
+name = "watch-remote"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cmf-wp2-app.workspace = true
+cmf-wp2-ui.workspace = true
+
+[[bin]]
+name = "watch-remote"
+bench = false
