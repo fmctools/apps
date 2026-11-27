@@ -1,0 +1,11 @@
+{
+  "id": "gemini-watch",
+  "name": "Gemini AI",
+  "version": "0.1.0",
+  "description": "Interact with Google Gemini directly from your CMF Watch without a phone.",
+  "author": "Community",
+  "abi": "1.1",
+  "icon": "icon.svg",
+  "category": "utilities",
+  "tags": ["ai", "gemini", "assistant", "tools"]
+}

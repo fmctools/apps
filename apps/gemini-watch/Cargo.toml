@@ -1,0 +1,18 @@
+[package]
+name = "gemini-watch"
+version = "0.1.0"
+edition = "2021"
+description = "Interact with Google Gemini directly from your CMF Watch"
+authors = ["Community"]
+
+[dependencies]
+cmf_wp2_app = { path = "../../sdk/crates/cmf_wp2_app" }
+heapless = "0.8"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde_json_core = "0.5"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
