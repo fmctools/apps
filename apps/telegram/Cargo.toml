@@ -1,0 +1,12 @@
+[package]
+name = "telegram"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cmf-wp2-app.workspace = true
+
+[[bin]]
+name = "telegram"
+bench = false
