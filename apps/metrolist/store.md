@@ -11,11 +11,11 @@ Two things live in the app:
 
 - **Controller** — the phone's current track and its artist above the play button (a title too long for the row
   scrolls round as a marquee), previous / play-pause / next around the centre, and a bottom row of Volume and Queue
-  text buttons. The sleeve's dominant colour glows behind it (concentric bands: the watch's LVGL has no gradient), the
-  phone sends that one 16-bit value with the track, and the progress ring takes it too. The controls are see-through,
-  so the glow reads through the play button, the skips and both bottom buttons. The volume button opens its own screen: a capsule
-  that follows the phone's volume, drag it or turn the crown, and the change goes to the phone with a Back pill below
-  it. The Queue button opens the phone's queue (up to 20 songs, the playing one filled); tap an entry to jump to it
+  buttons. The sleeve's dominant colour glows behind it (concentric bands: the watch's LVGL has no gradient), the
+  phone sends that one 16-bit value with the track, and the progress ring takes it too. The controls carry Google's
+  Material Icons — play, pause, skip back, skip forward, volume and queue — drawn from bitmaps in the package, each on
+  a black control of its own so the glow reads around it. The volume button opens its own screen: Louder and Softer,
+  or the crown, step the phone's own media volume through the watch's media keys, with a Back pill below it. The Queue button opens the phone's queue (up to 20 songs, the playing one filled); tap an entry to jump to it
   in the same queue, and the Back pill at the bottom returns to the player.
 - **Page** — long press its row in Apps → Add page and the player sits next to the watch face, a swipe away, with no
   browsing around it.
@@ -31,8 +31,9 @@ phone, and the watch only names a category, an item number and a play / pause / 
   the APK (the release page also has the source, the `.wp2app` and the build instructions), install it next to your
   existing Metrolist — the debug build is `com.metrolist.music.debug`, so nothing is overwritten — then open
   **Settings → Watch** and turn the watch link on. Sign in to YouTube Music there; the watch has no account of its own.
-- FMC patched firmware with the channel key and an App Loader from 2026-11-16 or later (the app owns Back, pages the
-  controller sideways and draws with the stock LVGL widgets). Nothing re-pairs and Nothing X keeps working.
+- FMC patched firmware with the channel key and an App Loader from 2026-11-27 or later (the app owns Back, pages the
+  controller sideways, draws with the stock LVGL widgets and shows its icons from bitmap assets in the package).
+  Nothing re-pairs and Nothing X keeps working.
 - Settings → Watch also installs the bundled Metrolist watch package over that same link: **Install Metrolist on
   watch**. Keep the watch awake during the upload; no separate installer or second pairing is used.
 - The watch and the phone on the same Bluetooth link: one central at a time, so no second device (a Mac, say) while

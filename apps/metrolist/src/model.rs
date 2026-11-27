@@ -11,7 +11,6 @@
 //!   `b` node                          browse node `0` (root categories) or a folder the phone named
 //!   `p` node index                    play item `index` of node `node`; the phone queues the node from there
 //!   `t` cmd                           transport: 0 play/pause, 1 next, 2 previous
-//!   `v` level                         volume 0..=100
 //!   `q`                               send the queue (the controller's second page)
 //!   `j` index                         play queue entry `index` of the current queue
 //!
@@ -35,6 +34,10 @@
 //!
 //! Names: a list title is at most 20 bytes, a category name 20, a track title 34, an artist 20. A two-item `I` frame
 //! stays under 128 bytes with those limits, which is why the phone clips them.
+//!
+//! The volume is not a frame: the watch steps the phone's own media volume with the loader's media keys
+//! (`Api::media_key`), so it needs no link of this app's own. The `vol` byte of `S` is the phone's player gain, which
+//! the watch reads no longer.
 
 pub const MAGIC: [u8; 2] = *b"M1";
 pub const MSG_MAX: usize = 128;
@@ -54,7 +57,6 @@ pub const HELLO: u8 = b'?';
 pub const BROWSE: u8 = b'b';
 pub const PLAY: u8 = b'p';
 pub const TRANSPORT: u8 = b't';
-pub const VOLUME: u8 = b'v';
 pub const QUEUE_REQ: u8 = b'q';
 pub const QUEUE_PLAY: u8 = b'j';
 
@@ -87,9 +89,6 @@ pub const CMD_TOGGLE: u8 = 0;
 pub const CMD_NEXT: u8 = 1;
 pub const CMD_PREV: u8 = 2;
 
-/// One crown detent changes the volume by this many percent.
-pub const VOL_STEP: i16 = 5;
-
 pub const ROOT_TITLE: &str = "Metrolist";
 
 fn text(bytes: &[u8], len: u8) -> &str {
@@ -102,8 +101,6 @@ pub struct Now {
     pub playing: bool,
     /// 0..=100.
     pub pos: u8,
-    /// 0..=100.
-    pub vol: u8,
     pub tlen: u8,
     pub title: [u8; TITLE_MAX],
     pub alen: u8,
@@ -117,7 +114,6 @@ impl Now {
         has: false,
         playing: false,
         pos: 0,
-        vol: 50,
         tlen: 0,
         title: [0; TITLE_MAX],
         alen: 0,
@@ -333,11 +329,6 @@ impl Model {
         Some(parent)
     }
 
-    /// The playing track's volume after `delta` crown detents, kept in 0..=100.
-    pub fn step_volume(level: u8, delta: i16) -> u8 {
-        (level as i16 + delta * VOL_STEP).clamp(0, 100) as u8
-    }
-
     pub fn browse_frame(node: u8) -> [u8; 4] {
         [b'M', b'1', BROWSE, node]
     }
@@ -348,10 +339,6 @@ impl Model {
 
     pub fn transport_frame(cmd: u8) -> [u8; 4] {
         [b'M', b'1', TRANSPORT, cmd]
-    }
-
-    pub fn volume_frame(level: u8) -> [u8; 4] {
-        [b'M', b'1', VOLUME, level.min(100)]
     }
 
     pub fn hello_frame() -> [u8; 3] {
@@ -432,7 +419,6 @@ impl Model {
             has: flags & NOW_HAS_TRACK != 0,
             playing: flags & NOW_PLAYING != 0,
             pos: msg[4],
-            vol: msg[5],
             tlen,
             title,
             alen,
@@ -834,7 +820,6 @@ mod tests {
         assert_eq!(Model::transport_frame(CMD_NEXT), *b"M1t\x01");
         assert_eq!(Model::play_frame(4, 7), *b"M1p\x04\x07");
         assert_eq!(Model::browse_frame(0), *b"M1b\x00");
-        assert_eq!(Model::volume_frame(140), *b"M1v\x64");
         assert_eq!(Model::hello_frame(), *b"M1?");
         assert_eq!(Model::queue_frame(), *b"M1q");
         assert_eq!(Model::queue_play_frame(7), *b"M1j\x07");
@@ -870,15 +855,6 @@ mod tests {
         assert_eq!(m.apply(b"M1Q\x02\x05", 13), Effect::default());
         assert_eq!(m.apply(b"M1J\x00\x02\x09", 14), Effect::default());
         assert_eq!(m.queue_count, 3);
-    }
-
-    #[test]
-    fn volume_steps_stay_in_range() {
-        assert_eq!(Model::step_volume(50, 1), 55);
-        assert_eq!(Model::step_volume(50, -1), 45);
-        assert_eq!(Model::step_volume(98, 1), 100);
-        assert_eq!(Model::step_volume(2, -1), 0);
-        assert_eq!(Model::step_volume(0, -5), 0);
     }
 
     #[test]

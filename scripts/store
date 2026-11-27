@@ -171,6 +171,9 @@ def build(name):
         subprocess.run(["resvg", "-w", "96", "-h", "96", svg, icons / f"{name}.png"], check=True)
         wp2apps(icons / f"{name}.png", icons / f"{name}.wp2icon", module="wp2apps.icon")
         env["WP2_ICON"] = str(icons / f"{name}.wp2icon")
+    # bitmap assets (docs/bitmap-assets.md): bitmaps/*.png -> src/bitmaps.gen.rs for bitmaps!()
+    if (APPS / name / "bitmaps").is_dir():
+        wp2apps(APPS / name, module="wp2apps.bitmaps")
     # the SDK sits outside the workspace, so panic locations would carry this machine's absolute path to it;
     # remapped, a package is the same on every machine (appended to apps/.cargo/config.toml's rustflags)
     # Cargo parses --config as TOML; native Windows backslashes in a quoted value are escapes there.
