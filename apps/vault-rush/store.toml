@@ -1,0 +1,5 @@
+name = "Vault Rush"
+summary = "Crack a steel safe with the crown in Classic, Heist (timed win), and Blitz modes"
+version = "0.1.0"
+author = "mead0wss"
+screenshots = ["shots/menu.png", "shots/heist.png", "shots/playing.png", "shots/siren.png", "shots/over.png"]
