@@ -9,14 +9,20 @@
 //! A bitmap has no alpha yet (a transparent pixel becomes black), so each glyph sits on a black control whose colour is
 //! the plate around it, and the glow reads around them. The player's glow is the artwork's colour, sent by the phone as
 //! one RGB565 value.
+//!
+//! The search screen has the watch's own keyboard: a QWERTY grid of stock buttons (not an LVGL text area, which would
+//! need the loader's input device), so every tap is the app's and the finished query goes to the phone as one frame.
+//! The keys fill the bottom of the round screen, as on a phone's keyboard, with the query box above them; the phone's
+//! five best matches come back as an ordinary list, so choosing one is the list screen's tap.
+//!
+//! Back is one small round icon button in the top-left corner of every screen that has a way back (the start screen's
+//! leaves the app). It is a child of the root, so it stays put when a focus page scrolls under it.
 
 use crate::bitmaps;
 use crate::model::*;
 use cmf_wp2_app::lv::*;
 use cmf_wp2_app::Bitmap;
-use cmf_wp2_app::stock::{
-    self, CIRCLE, GREY, ROW_BG, ROW_H, ROW_PRESSED, ROW_W, SCREEN, WHITE,
-};
+use cmf_wp2_app::stock::{self, CIRCLE, GREY, ROW_BG, ROW_W, SCREEN, WHITE};
 
 /// Font slots besides the system font (slot 0).
 pub const F24: u8 = 1;
@@ -26,6 +32,14 @@ pub const F36: u8 = 2;
 const GROUP: usize = 620;
 /// `Event.y` of an LVGL CLICKED event.
 pub const CLICKED: i16 = 7;
+/// `Event.y` of an LVGL VALUE_CHANGED event (a slider's or a switch's new value is in `delta`).
+pub const VALUE_CHANGED: i16 = 28;
+/// The search keyboard's most keys: 26 letters, space, DEL and Search.
+pub const KEY_MAX: usize = 32;
+/// Key codes that are not a letter: the letter keys carry `0..=25`.
+pub const KEY_SPACE: u8 = 26;
+pub const KEY_DEL: u8 = 27;
+pub const KEY_GO: u8 = 28;
 
 /// A row's text starts clear of the curved left edge; no icon or art circle sits behind it.
 const TEXT_X: i16 = 28;
@@ -67,17 +81,42 @@ const GLOW_IN: i32 = 24;
 /// the ring, not a light of its own.
 const GLOW_BRIGHT: u32 = 116;
 
-// The volume screen: a heading, the note that this is the phone's own volume, the two step buttons and the Back pill.
-const VOL_TITLE_Y: i16 = -200;
-const VOL_MSG_Y: i16 = -120;
-const VOL_BTN_Y: i16 = 10;
-/// The status line under the heading; [`show_vol_msg`] replaces it when the phone refuses a step.
-const VOL_MSG: &str = "The phone's own volume";
+// The volume screen: a heading, then a tall vertical slider down the middle of the face, with the note under it.
+// An LVGL bar or slider is vertical when its width is under its height (LVGL 8.3, "Bar (lv_bar)"), and a vertical one
+// fills from the bottom up.
+const VOL_TITLE_Y: i16 = -170;
+const VOL_MSG_Y: i16 = 200;
+const VOL_SLIDER_Y: i16 = 10;
+const VOL_SLIDER_W: i32 = 48;
+const VOL_SLIDER_H: i32 = 300;
+/// The slider's track: the stock row grey, so the white fill and knob read against it.
+const VOL_TRACK: i32 = stock::ROW_BG;
+/// The slider's steps. The loader offers the phone's volume keys, not its level, so the app keeps a fifteen-step track
+/// of its own (Android's usual media volume range) and presses a key per step it moves.
+pub const VOL_STEPS: i32 = 15;
+/// The status line under the heading; [`show_volume`] replaces it when the phone refuses a step.
+pub const VOL_MSG: &str = "The phone's own volume";
 
-/// The queue screen's Back pill: width, height, distance from the bottom edge.
-const BACK_W: i32 = 132;
-const BACK_H: i32 = 54;
-const BACK_Y: i16 = -10;
+// The search screen: the query box under the Back button, then the keyboard down to the bottom edge: three QWERTY rows
+// and a bottom row of DEL, space and Search. The key rows are as wide as the round face allows at their height: the
+// top row spans 456 px where the chord is 464, the bottom row 228 where it is 266.
+const SEARCH_BOX_Y: i16 = -100;
+const SEARCH_BOX_W: i32 = 340;
+const SEARCH_BOX_H: i32 = 50;
+const SEARCH_BOX_R: i32 = 25;
+const QUERY_HINT: &str = "Type a song";
+const SEARCH_KEY_W: i32 = 42;
+const SEARCH_KEY_H: i32 = 50;
+const SEARCH_KEY_GAP: i16 = 4;
+/// The keyboard's four rows, as offsets from the screen's centre: the last one ends 42 px above the bottom edge.
+const KEY_Y: [i16; 4] = [4, 58, 112, 166];
+/// The Search key's red: the stock palette has no red, and the key has to read as the action.
+const SEARCH_RED: i32 = 0xC145;
+
+/// The Back button: a small round icon button in the top-left corner, inside the round face.
+const BACK_SIZE: i32 = 44;
+const BACK_X: i16 = 70;
+const BACK_Y: i16 = 58;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -87,6 +126,7 @@ pub enum Kind {
     Volume,
     Browse,
     List,
+    Search,
 }
 
 /// What the app reacts to on the current screen; unused handles are `ROOT` (never an event target).
@@ -122,9 +162,15 @@ pub struct Screen {
     /// The queue screen's rows, in queue order.
     pub queue_rows: [Obj; MAX_ITEMS],
     pub queue_count: u8,
-    /// The volume screen's two step buttons (`ROOT` elsewhere): the phone's own volume keys.
-    pub vol_up: Obj,
-    pub vol_down: Obj,
+    /// The volume screen's slider (`ROOT` elsewhere): the app's track over the phone's volume keys.
+    pub volume: Obj,
+    /// The search screen's keyboard: one handle per key, with its code (a letter's index, or `KEY_SPACE` /
+    /// `KEY_DEL` / `KEY_GO`).
+    pub keys: [Obj; KEY_MAX],
+    pub key_codes: [u8; KEY_MAX],
+    pub key_count: u8,
+    /// The box that shows what has been typed (and its hint while it is empty).
+    pub query: Obj,
 }
 
 const EMPTY: Screen = Screen {
@@ -151,8 +197,11 @@ const EMPTY: Screen = Screen {
     status: ROOT,
     queue_rows: [ROOT; MAX_ITEMS],
     queue_count: 0,
-    vol_up: ROOT,
-    vol_down: ROOT,
+    volume: ROOT,
+    keys: [ROOT; KEY_MAX],
+    key_codes: [0; KEY_MAX],
+    key_count: 0,
+    query: ROOT,
 };
 
 impl Screen {
@@ -219,9 +268,10 @@ fn icon(b: &mut Batch, flush: Flush, parent: Obj, bm: &Bitmap, x: i16, y: i16) -
     Ok(img)
 }
 
-/// A rounded-rectangle button in the app's black, with a Material icon and a label: the Volume and Queue controls. The
-/// black the icon's transparency became is the button's own colour, so no plate shows around the glyph.
-fn icon_pill(b: &mut Batch, flush: Flush, parent: Obj, x: i16, y: i16, bm: &Bitmap, label: &str) -> Result<Obj, LvError> {
+/// A rounded-rectangle button in the app's black with a single Material icon: the Volume and Queue controls. The icon is
+/// the whole button (a label beside it said the same thing twice). The black the icon's transparency became is the
+/// button's own colour, so no plate shows around the glyph.
+fn icon_pill(b: &mut Batch, flush: Flush, parent: Obj, x: i16, y: i16, bm: &Bitmap) -> Result<Obj, LvError> {
     let pill = b.create(Class::Btn, parent)?;
     b.size(pill, PILL_W, PILL_H)?;
     b.align(pill, Align::Center, x, y)?;
@@ -232,34 +282,25 @@ fn icon_pill(b: &mut Batch, flush: Flush, parent: Obj, x: i16, y: i16, bm: &Bitm
     b.style(pill, Prop::BgOpa, stock::PRESSED, 40)?;
     b.style(pill, Prop::BorderWidth, 0, 0)?;
     b.events(pill, &[Ev::Clicked])?;
-    icon(b, flush, pill, bm, -32, 0)?;
-    let text = b.create(Class::Label, pill)?;
-    b.text(text, label)?;
-    b.style(text, Prop::TextFont, 0, F24 as i32)?;
-    b.align(text, Align::Center, 13, 0)?;
-    b.flags(text, &[], &[Flag::Clickable, Flag::Scrollable])?;
+    icon(b, flush, pill, bm, 0, 0)?;
     Ok(pill)
 }
 
-/// The queue screen's Back pill: a stock-looking round button that only goes back.
-fn back_pill(b: &mut Batch, flush: Flush) -> Result<Obj, LvError> {
-    let pill = b.create(Class::Btn, ROOT)?;
-    b.size(pill, BACK_W, BACK_H)?;
-    b.align(pill, Align::BottomMid, 0, BACK_Y)?;
-    b.style(pill, Prop::Radius, 0, CIRCLE)?;
-    b.style(pill, Prop::BgColor, 0, stock::BLACK)?;
-    b.style(pill, Prop::BgOpa, 0, 255)?;
-    b.style(pill, Prop::BgColor, stock::PRESSED, WHITE)?;
-    b.style(pill, Prop::BgOpa, stock::PRESSED, 40)?;
-    b.style(pill, Prop::BorderWidth, 0, 0)?;
-    b.events(pill, &[Ev::Clicked])?;
-    icon(b, flush, pill, &bitmaps::ARROW_BACK, -38, 0)?;
-    let label = b.create(Class::Label, pill)?;
-    b.text(label, "Back")?;
-    b.style(label, Prop::TextFont, 0, F24 as i32)?;
-    b.align(label, Align::Center, 12, 0)?;
-    b.flags(label, &[], &[Flag::Clickable, Flag::Scrollable])?;
-    Ok(pill)
+/// The top-left Back button: a round plate with the arrow, a child of the root so a scrolling page never takes it with
+/// it. It only goes back; the app reads the tap.
+fn back_button(b: &mut Batch, flush: Flush) -> Result<Obj, LvError> {
+    let btn = b.create(Class::Btn, ROOT)?;
+    b.size(btn, BACK_SIZE, BACK_SIZE)?;
+    b.align(btn, Align::TopLeft, BACK_X, BACK_Y)?;
+    b.style(btn, Prop::Radius, 0, CIRCLE)?;
+    b.style(btn, Prop::BgColor, 0, ROW_BG)?;
+    b.style(btn, Prop::BgOpa, 0, 255)?;
+    b.style(btn, Prop::BgColor, stock::PRESSED, WHITE)?;
+    b.style(btn, Prop::BgOpa, stock::PRESSED, 40)?;
+    b.style(btn, Prop::BorderWidth, 0, 0)?;
+    b.events(btn, &[Ev::Clicked])?;
+    icon(b, flush, btn, &bitmaps::ARROW_BACK, 0, 0)?;
+    Ok(btn)
 }
 
 /// A stock focus row: no icon, a title at `LeftMid(28, -16)`, an optional grey second line at `+20`. The fisheye
@@ -287,21 +328,29 @@ fn focus_row(b: &mut Batch, flush: Flush, page: Obj, name: &str, detail: &str) -
     Ok(row)
 }
 
-/// The start screen: the two surfaces.
+/// The start screen: Search first, then the library, then the player. A stock focus page like the app list, so the crown
+/// (or a drag) scrolls the three rows round the screen and the centred one is marked; the top-left arrow leaves the app.
 pub fn home(b: &mut Batch, flush: Flush) -> Result<Screen, LvError> {
     room(b, flush)?;
-    let (page, _bar) = stock::page(b)?;
+    let (page, _bar) = stock::focus_page(b, 0)?;
     opaque(b, page)?;
+    // A gap between the rows: the fisheye page lays them out edge to edge, which reads as one block.
+    b.style(page, Prop::PadRow, 0, 8)?;
     let mut s = Screen { kind: Kind::Home, page, ..EMPTY };
-    heading(b, flush, page, "Metrolist", stock::TOP - stock::TITLE_Y - stock::ROW_GAP)?;
-    let entries: [(&str, &str); 2] =
-        [("Controller", "Playback on your phone"), ("Metrolist", "Quick picks, library")];
+    heading(b, flush, page, "Metrolist", stock::FOCUS_ROW_H)?;
+    let entries: [(&str, &str); 3] = [
+        ("Search", "Find a song by name"),
+        ("Metrolist", "Quick picks, library"),
+        ("Controller", "Playback on your phone"),
+    ];
     for (i, (name, detail)) in entries.into_iter().enumerate() {
         room(b, flush)?;
-        let row = stock::card(b, page, ROW_H)?;
-        b.style(row, Prop::BgColor, stock::PRESSED, ROW_PRESSED)?;
+        let row = stock::focus_row(b, page)?;
+        // Only the row the fisheye centres (the loader's CHECKED state) gets a plate. Filling every row painted three
+        // bars edge to edge, which read as everything being selected at once.
+        b.style(row, Prop::BgColor, CHECKED, ROW_BG)?;
+        b.style(row, Prop::BgOpa, CHECKED, 255)?;
         b.flags(row, &[Flag::Clickable], &[Flag::Scrollable])?;
-        b.events(row, &[Ev::Clicked])?;
         let t = b.create(Class::Label, row)?;
         b.size(t, TEXT_W, 40)?;
         b.long_mode(t, LongMode::Dot)?;
@@ -319,6 +368,7 @@ pub fn home(b: &mut Batch, flush: Flush) -> Result<Screen, LvError> {
         s.rows[i] = row;
         s.row_count = (i + 1) as u8;
     }
+    s.back_btn = back_button(b, flush)?;
     Ok(s)
 }
 
@@ -610,8 +660,8 @@ pub fn controller(b: &mut Batch, flush: Flush, m: &Model, clock: &str) -> Result
     s.next = round_btn(b, body, SIDE, SIDE_X, DISC_Y, stock::BLACK, 255)?;
     icon(b, flush, s.next, &bitmaps::SKIP_NEXT, 0, 0)?;
 
-    s.vol = icon_pill(b, flush, body, -PILL_X, BOTTOM_Y, &bitmaps::VOLUME_UP, "Volume")?;
-    s.queue_btn = icon_pill(b, flush, body, PILL_X, BOTTOM_Y, &bitmaps::QUEUE_MUSIC, "Queue")?;
+    s.vol = icon_pill(b, flush, body, -PILL_X, BOTTOM_Y, &bitmaps::VOLUME_UP)?;
+    s.queue_btn = icon_pill(b, flush, body, PILL_X, BOTTOM_Y, &bitmaps::QUEUE_MUSIC)?;
 
     show_now(b, flush, &s, m, false)?;
     Ok(s)
@@ -637,29 +687,145 @@ pub fn queue(b: &mut Batch, flush: Flush, m: &Model) -> Result<Screen, LvError> 
             s.queue_count = (i + 1) as u8;
         }
     }
-    s.back_btn = back_pill(b, flush)?;
+    s.back_btn = back_button(b, flush)?;
     show_queue(b, &s, m)?;
     Ok(s)
 }
 
-/// The volume screen: the phone's own media volume, stepped a key at a time. The watch cannot read that level back
-/// (the loader offers the keys, not the value), so the screen shows the two steps instead of a capsule that could only
-/// guess at the phone's volume.
-pub fn volume(b: &mut Batch, flush: Flush, _m: &Model) -> Result<Screen, LvError> {
+/// The volume screen: the phone's own media volume on a slider. The watch cannot read that level back (the loader
+/// offers the phone's volume keys, not its value), so the slider is the app's own fifteen-step track: every step it
+/// moves presses a key once, and the crown moves the same track.
+pub fn volume(b: &mut Batch, flush: Flush, level: u8) -> Result<Screen, LvError> {
     room(b, flush)?;
     let mut s = Screen { kind: Kind::Volume, ..EMPTY };
     let body = page_black(b, ROOT)?;
     s.page = body;
     s.clock = centred(b, body, VOL_TITLE_Y, 300, 40, "Volume", WHITE, Some(F36))?;
-    s.hint = centred(b, body, VOL_MSG_Y, 380, 40, VOL_MSG, GREY, Some(F24))?;
-    s.vol_up = icon_pill(b, flush, body, -PILL_X, VOL_BTN_Y, &bitmaps::VOLUME_UP, "Louder")?;
-    s.vol_down = icon_pill(b, flush, body, PILL_X, VOL_BTN_Y, &bitmaps::VOLUME_DOWN, "Softer")?;
-    s.back_btn = back_pill(b, flush)?;
+    s.hint = centred(b, body, VOL_MSG_Y, 380, 36, VOL_MSG, GREY, Some(F24))?;
+    room(b, flush)?;
+    let slider = b.create(Class::Slider, body)?;
+    b.size(slider, VOL_SLIDER_W, VOL_SLIDER_H)?;
+    b.align(slider, Align::Center, 0, VOL_SLIDER_Y)?;
+    b.range(slider, 0, VOL_STEPS)?;
+    b.value(slider, (level as i32).min(VOL_STEPS), false)?;
+    // White on the stock row grey, rather than the stock accent: this is the volume the phone will play at.
+    for (part, colour) in [(0, VOL_TRACK), (stock::INDICATOR, WHITE), (stock::KNOB, WHITE)] {
+        b.style(slider, Prop::BgColor, part, colour)?;
+        b.style(slider, Prop::BgOpa, part, 255)?;
+        b.style(slider, Prop::Radius, part, CIRCLE)?;
+    }
+    b.style(slider, Prop::BorderWidth, 0, 0)?;
+    b.events(slider, &[Ev::ValueChanged])?;
+    s.volume = slider;
+    s.back_btn = back_button(b, flush)?;
     Ok(s)
 }
 
-/// The volume screen's status line: why a step did nothing, or [`VOL_MSG`] again.
-pub fn show_vol_msg(b: &mut Batch, s: &Screen, text: &str) -> Result<(), LvError> {
+/// The search screen: the typed query and the app's own QWERTY keyboard. The Search key sends the query to the phone,
+/// which answers with a list for `SEARCH_NODE`; the list screen draws the five best matches, so a tap plays from them
+/// like any other song list.
+pub fn search(b: &mut Batch, flush: Flush, query: &str) -> Result<Screen, LvError> {
+    room(b, flush)?;
+    let mut s = Screen { kind: Kind::Search, ..EMPTY };
+    let body = page_black(b, ROOT)?;
+    s.page = body;
+    room(b, flush)?;
+    let field = b.create(Class::Obj, body)?;
+    b.size(field, SEARCH_BOX_W, SEARCH_BOX_H)?;
+    b.align(field, Align::Center, 0, SEARCH_BOX_Y)?;
+    b.style(field, Prop::Radius, 0, SEARCH_BOX_R)?;
+    b.style(field, Prop::BgColor, 0, stock::ROW_BG)?;
+    b.style(field, Prop::BgOpa, 0, 255)?;
+    b.style(field, Prop::BorderWidth, 0, 0)?;
+    b.flags(field, &[], &[Flag::Clickable, Flag::Scrollable])?;
+    s.query = centred(
+        b,
+        field,
+        0,
+        SEARCH_BOX_W - 28,
+        40,
+        if query.is_empty() { QUERY_HINT } else { query },
+        if query.is_empty() { GREY } else { WHITE },
+        Some(F24),
+    )?;
+
+    let rows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
+    for (r, letters) in rows.iter().enumerate() {
+        let count = letters.len() as i32;
+        for (i, ch) in letters.chars().enumerate() {
+            let x = ((i as i32 * 2 - (count - 1)) * (SEARCH_KEY_W + SEARCH_KEY_GAP as i32)) / 2;
+            let mut glyph = [0u8; 4];
+            let label = ch.encode_utf8(&mut glyph);
+            let key = search_key(b, flush, body, x as i16, KEY_Y[r], SEARCH_KEY_W, &*label, stock::ROW_BG)?;
+            s.keys[s.key_count as usize] = key;
+            // The code is the letter's index in the alphabet, not its place in the row: `h` is 7 whatever row it is
+            // on (the row index here is what made the bottom rows type the wrong letters).
+            s.key_codes[s.key_count as usize] = ch as u8 - b'a';
+            s.key_count += 1;
+        }
+    }
+    // DEL, space and Search on one line, in the phone keyboard's order.
+    let bottom: [(i16, i32, &str, u8, i32); 3] = [
+        (-90, 48, "DEL", KEY_DEL, stock::ROW_BG),
+        (-10, 104, "space", KEY_SPACE, stock::ROW_BG),
+        (80, 68, "Search", KEY_GO, SEARCH_RED),
+    ];
+    s.back_btn = back_button(b, flush)?;
+    for (x, w, label, code, fill) in bottom {
+        let key = search_key(b, flush, body, x, KEY_Y[3], w, label, fill)?;
+        s.keys[s.key_count as usize] = key;
+        s.key_codes[s.key_count as usize] = code;
+        s.key_count += 1;
+    }
+    Ok(s)
+}
+
+/// One key of the search keyboard: a rounded stock button with a label. The app reads the tap, so no text area and no
+/// loader input device are involved.
+fn search_key(
+    b: &mut Batch,
+    flush: Flush,
+    parent: Obj,
+    x: i16,
+    y: i16,
+    w: i32,
+    label: &str,
+    fill: i32,
+) -> Result<Obj, LvError> {
+    room(b, flush)?;
+    let key = b.create(Class::Btn, parent)?;
+    b.size(key, w, SEARCH_KEY_H)?;
+    b.align(key, Align::Center, x, y)?;
+    b.style(key, Prop::Radius, 0, 14)?;
+    b.style(key, Prop::BgColor, 0, fill)?;
+    b.style(key, Prop::BgOpa, 0, 255)?;
+    b.style(key, Prop::BgColor, stock::PRESSED, WHITE)?;
+    b.style(key, Prop::BgOpa, stock::PRESSED, 60)?;
+    b.style(key, Prop::BorderWidth, 0, 0)?;
+    b.events(key, &[Ev::Clicked])?;
+    let text = b.create(Class::Label, key)?;
+    b.text(text, label)?;
+    b.style(text, Prop::TextFont, 0, F24 as i32)?;
+    b.align(text, Align::Center, 0, 0)?;
+    b.flags(text, &[], &[Flag::Clickable, Flag::Scrollable])?;
+    Ok(key)
+}
+
+/// The query box follows the typed text; the hint stays grey until there is something to search.
+pub fn show_query(b: &mut Batch, s: &Screen, query: &str) -> Result<(), LvError> {
+    if s.query == ROOT {
+        return Ok(());
+    }
+    let empty = query.is_empty();
+    b.text(s.query, if empty { QUERY_HINT } else { query })?;
+    b.style(s.query, Prop::TextColor, 0, if empty { GREY } else { WHITE })
+}
+
+/// The volume screen follows the app's track, and says why a step did nothing ([`VOL_MSG`] again when it worked).
+pub fn show_volume(b: &mut Batch, s: &Screen, level: u8, text: &str) -> Result<(), LvError> {
+    if s.volume != ROOT {
+        b.value(s.volume, (level as i32).min(VOL_STEPS), false)?;
+    }
     if s.hint == ROOT {
         return Ok(());
     }
@@ -808,6 +974,15 @@ pub fn queue_at(s: &Screen, handle: u16) -> Option<usize> {
     s.queue_rows.iter().take(s.queue_count as usize).position(|r| r.0 == handle && handle != ROOT.0)
 }
 
+/// The code of the search keyboard's key `handle`, or `None` when it is not a key.
+pub fn key_at(s: &Screen, handle: u16) -> Option<u8> {
+    s.keys
+        .iter()
+        .take(s.key_count as usize)
+        .position(|k| k.0 == handle && handle != ROOT.0)
+        .map(|i| s.key_codes[i])
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -916,6 +1091,7 @@ mod tests {
                 Kind::Controller,
                 Kind::Queue,
                 Kind::Volume,
+                Kind::Search,
                 Kind::Home,
             ] {
                 leave(b, &s).unwrap();
@@ -926,7 +1102,8 @@ mod tests {
                     Kind::List => list(b, &mut |b| l.flush(b), &m).unwrap(),
                     Kind::Controller => controller(b, &mut |b| l.flush(b), &m, text).unwrap(),
                     Kind::Queue => queue(b, &mut |b| l.flush(b), &m).unwrap(),
-                    Kind::Volume => volume(b, &mut |b| l.flush(b), &m).unwrap(),
+                    Kind::Volume => volume(b, &mut |b| l.flush(b), 8).unwrap(),
+                    Kind::Search => search(b, &mut |b| l.flush(b), "song").unwrap(),
                 };
                 assert_eq!(s.page, first, "{kind:?} reuses the freed handles");
                 l.flush(b).unwrap();
@@ -936,9 +1113,15 @@ mod tests {
                     show_state(b, &s, false).unwrap();
                 }
                 if kind == Kind::Volume {
-                    assert_ne!(s.vol_up, ROOT);
-                    assert_ne!(s.vol_down, ROOT);
-                    show_vol_msg(b, &s, "No phone media").unwrap();
+                    assert_ne!(s.volume, ROOT);
+                    assert_ne!(s.back_btn, ROOT);
+                    show_volume(b, &s, 9, "No phone media").unwrap();
+                    show_volume(b, &s, 2, VOL_MSG).unwrap();
+                }
+                if kind == Kind::Search {
+                    assert_eq!(s.key_count, 29);
+                    show_query(b, &s, "a").unwrap();
+                    show_query(b, &s, "").unwrap();
                 }
                 if kind == Kind::Queue {
                     show_queue(b, &s, &m).unwrap();
@@ -964,6 +1147,7 @@ mod tests {
         assert_eq!(s.queue_count, 0);
         assert_ne!(s.queue_btn, ROOT);
         assert_eq!(s.back_btn, ROOT);
+        assert_eq!(s.volume, ROOT);
         let q = queue(&mut b, &mut flush, &m).unwrap();
         assert_eq!(q.kind, Kind::Queue);
         assert_eq!(q.queue_count, 2);
@@ -979,9 +1163,23 @@ mod tests {
             Ok(())
         };
         let home_screen = home(&mut b, &mut flush).unwrap();
-        assert_eq!(home_screen.row_count, 2);
-        assert_eq!(row_at(&home_screen, home_screen.rows[1].0), Some(1));
+        assert_eq!(home_screen.row_count, 3);
+        assert_eq!(row_at(&home_screen, home_screen.rows[0].0), Some(0));
+        assert_eq!(row_at(&home_screen, home_screen.rows[2].0), Some(2));
+        assert_ne!(home_screen.back_btn, ROOT);
         assert_eq!(row_at(&home_screen, ROOT.0), None);
+        let search_screen = search(&mut b, &mut flush, "").unwrap();
+        assert_eq!(search_screen.key_count, 29);
+        assert_eq!(key_at(&search_screen, search_screen.keys[0].0), Some(16), "q is 16");
+        assert_eq!(key_at(&search_screen, search_screen.keys[1].0), Some(22), "w is 22");
+        // row two starts at `a` and row three at `z`, each with its letter's own code
+        assert_eq!(key_at(&search_screen, search_screen.keys[12].0), Some(3), "d is 3");
+        assert_eq!(key_at(&search_screen, search_screen.keys[15].0), Some(7), "h is 7");
+        assert_eq!(key_at(&search_screen, search_screen.keys[19].0), Some(25), "z is 25");
+        assert_eq!(key_at(&search_screen, search_screen.keys[26].0), Some(KEY_DEL));
+        assert_eq!(key_at(&search_screen, search_screen.keys[28].0), Some(KEY_GO));
+        assert_ne!(search_screen.back_btn, ROOT);
+        assert_eq!(key_at(&search_screen, ROOT.0), None);
         let list_screen = list(&mut b, &mut flush, &m).unwrap();
         assert_eq!(list_screen.row_count, 4);
         assert_eq!(row_at(&list_screen, list_screen.rows[3].0), Some(3));
