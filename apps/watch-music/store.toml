@@ -1,0 +1,5 @@
+name = "Watch Music"
+summary = "Music, podcasts and media controls on your watch: save songs with a heart, double-tap to skip 5 s, album-colour glow"
+version = "0.11.0"
+author = "Abdalrahman"
+screenshots = ["shots/home.png", "shots/music-list.png", "shots/music-player.png", "shots/saved-song.png", "shots/control-media.png", "shots/volume.png"]
