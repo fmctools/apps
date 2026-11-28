@@ -1,0 +1,5 @@
+name = "Lake Cast"
+summary = "Stand on the sandy shore, cast anywhere on the water ahead, and track fish on the vertical bar"
+version = "0.1.0"
+author = "mead0wss"
+screenshots = ["shots/menu.png", "shots/difficulty.png", "shots/lake.png", "shots/reeling.png", "shots/caught.png", "shots/trophies.png"]
