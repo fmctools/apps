@@ -1,0 +1,4 @@
+name = "Telegram"
+summary = "Telegram client in Apple Watch style with touchpad keyboard"
+version = "0.1.0"
+author = "weasters"

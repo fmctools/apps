@@ -1,0 +1,5 @@
+name = "Watch Remote"
+summary = "Use your watch as a remote for your PC or Google TV: arrows, OK, media keys and volume"
+version = "0.6.0"
+author = "Abdalrahman"
+screenshots = ["shots/page1.png", "shots/page2.png"]
